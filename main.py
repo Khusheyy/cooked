@@ -1,5 +1,7 @@
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+import streamlit as st
+import pandas as pd
 import os
 from dotenv import load_dotenv
 
@@ -40,4 +42,6 @@ for i, track in enumerate(top_tracks_results['items']):
 data_string = "\n".join(listening_data)
 print(data_string)
 
-
+st.set_page_config(page_title="Music Roast", page_icon="🎵")
+st.title("🎵 Music Roast Generator")
+st.write("Get ready to laugh at your own music taste! Click the button below to generate a hilarious roast based on your top Spotify tracks.")
