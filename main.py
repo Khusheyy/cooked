@@ -22,6 +22,7 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     redirect_uri=SPOTIPY_REDIRECT_URI
 ))
 
+
 top_tracks_results = sp.current_user_top_tracks(limit=10, time_range='medium_term')
 
 listening_data = []
