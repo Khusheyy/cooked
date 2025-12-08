@@ -5,6 +5,7 @@ import pandas as pd
 import os
 from dotenv import load_dotenv
 from google import genai
+client = genai.Client()
 from google.genai.errors import APIError
 
 #load env variables from .env file
