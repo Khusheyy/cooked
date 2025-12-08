@@ -115,7 +115,6 @@ if st.button(" Reveal my musical sins "):
                 artist_details = {}
                 
                 if unique_artist_ids:
-                    # Spotify API only allows fetching details for 50 artists at a time
                     for i in range(0, len(unique_artist_ids), 50):
                         chunk = unique_artist_ids[i:i + 50]
                         details = sp.artists(chunk)
@@ -132,10 +131,10 @@ if st.button(" Reveal my musical sins "):
                     
                     track['genres'] = list(all_genres)
                     
-                    # Prepare data for chart/table display
+                    # prepare data for chart/table display
                     rank_score = 10 - i 
                     df_row = {
-                        'Rank': i + 1, 
+                        'Rank': i, 
                         'Track Name': track['name'],
                         'Artist(s)': track['artists'],
                         'Album': track['album'],
@@ -143,7 +142,7 @@ if st.button(" Reveal my musical sins "):
                         'Ranking Score': rank_score
                     }
                     
-                    track_genre_data.append(track) # **THIS IS WHERE IT IS POPULATED**
+                    track_genre_data.append(track) # for roast generation
                     df_rows.append(df_row)
 
                 df_tracks = pd.DataFrame(df_rows)
