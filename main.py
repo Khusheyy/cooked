@@ -4,9 +4,9 @@ import streamlit as st
 import pandas as pd
 import os
 from dotenv import load_dotenv
-from google import genai
-client = genai.Client()
 from google.genai.errors import APIError
+from google.genai import Client
+client = Client()
 
 #load env variables from .env file
 load_dotenv()
