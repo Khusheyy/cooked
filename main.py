@@ -3,18 +3,15 @@ from spotipy.oauth2 import SpotifyOAuth
 import streamlit as st
 import pandas as pd
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
+load_dotenv()    
+#load env variables from .env file             
 
+from google.genai.errors import APIError 
 from google.genai import Client
-import os
-from dotenv import load_dotenv
 
-load_dotenv()        # load .env if using locally
-
+client = Client()
 client = Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-#load env variables from .env file
-load_dotenv()
 
 SCOPE = "user-top-read"
 SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
