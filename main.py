@@ -1,6 +1,8 @@
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import streamlit as st
+import uuid
+import glob
 import pandas as pd
 import os
 from dotenv import load_dotenv 
@@ -46,13 +48,21 @@ def get_spotify_client():
         return None, "Please set 'SPOTIPY_CLIENT_ID' and 'SPOTIPY_CLIENT_SECRET' in a '.env' file or environment variables"
     
     try:
+        # Ensure each Streamlit session gets a unique cache to avoid reusing
+        # a developer's previously-authorized token. This forces each user
+        # to authenticate with their own Spotify account.
+        if 'sp_session_id' not in st.session_state:
+            st.session_state['sp_session_id'] = str(uuid.uuid4())
+
+        cache_path = f".cache-{client_id}-{st.session_state['sp_session_id']}"
         #authentication manager
         auth_manager = SpotifyOAuth(
             scope=SCOPE,
             client_id=client_id,
             client_secret=client_secret,
             redirect_uri=SPOTIPY_REDIRECT_URI,
-            cache_path=f".cache-{client_id}"
+            cache_path=cache_path,
+            show_dialog=True
         )
         # spotipy client sp
         sp = spotipy.Spotify(auth_manager=auth_manager)
@@ -100,6 +110,26 @@ def generate_roast(track_genre_data):
 st.set_page_config(page_title="Music Roast", page_icon="🎵")
 st.title("🎵 Music Roast Generator 🎵")
 st.write("Get ready to laugh at your own music taste! Click the button below to fetch your top Spotify tracks.")
+
+# Allow users to clear the Spotify cache and force re-authentication
+client_id_preview = os.getenv("SPOTIPY_CLIENT_ID")
+if client_id_preview:
+    if st.button("Clear Spotify cache and re-authenticate"):
+        # remove any cache files that match the current client id pattern
+        pattern = f".cache-{client_id_preview}-*"
+        removed = 0
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+                removed += 1
+            except Exception:
+                pass
+        # reset session id so a new cache file will be created on next auth
+        st.session_state.pop('sp_session_id', None)
+        if removed:
+            st.success(f"Cleared {removed} cache file(s). Click 'Reveal my musical sins' to re-authenticate.")
+        else:
+            st.info("No cache files found to remove. Click 'Reveal my musical sins' to authenticate.")
 
 
 if st.button(" Reveal my musical sins "):
