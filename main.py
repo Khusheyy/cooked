@@ -7,8 +7,18 @@ from dotenv import load_dotenv
 load_dotenv()    
 #load env variables from .env file             
 
-from google.genai.errors import APIError 
+
 from google.genai import Client
+from google.genai.errors import APIError 
+
+# --- Client Initialization ---
+# The client automatically looks for the GEMINI_API_KEY environment variable.
+try:
+    gemini_client = Client()
+    print("Gemini Client initialized successfully!")
+except Exception as e:
+    # A generic catch for environment/API key issues
+    print(f"Error initializing Gemini Client: {e}")
 
 api_key = os.getenv("GEMINI_API_KEY") 
 client = Client(api_key=GEMINI_API_KEY)
