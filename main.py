@@ -19,13 +19,23 @@ try:
 except Exception as e:
     # A generic catch for environment/API key issues
     print(f"Error initializing Gemini Client: {e}")
+# Load Gemini API key from environment early so it's available for initialization
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-api_key = os.getenv("GEMINI_API_KEY") 
-client = Client(api_key=GEMINI_API_KEY)
+# The client will use the explicit API key if provided, otherwise it falls back
+# to the client's automatic environment lookup behavior.
+try:
+    if GEMINI_API_KEY:
+        gemini_client = Client(api_key=GEMINI_API_KEY)
+    else:
+        gemini_client = Client()
+    print("Gemini Client initialized successfully!")
+except Exception as e:
+    # A generic catch for environment/API key issues
+    print(f"Error initializing Gemini Client: {e}")
 
 SCOPE = "user-top-read"
 SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 
 def get_spotify_client():
@@ -57,7 +67,8 @@ def generate_roast(track_genre_data):
         return "FATAL ERROR: GEMINI_API_KEY not set. Cannot generate dynamic roast"
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Prefer the already-initialized global client when available
+        client = gemini_client if 'gemini_client' in globals() else Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         return f"GEMINI CLIENT ERROR: Could not initialize client. Check API key. Error: {e}"
 
