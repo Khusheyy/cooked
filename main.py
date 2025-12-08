@@ -4,9 +4,14 @@ import streamlit as st
 import pandas as pd
 import os
 from dotenv import load_dotenv
-from google.genai.errors import APIError
+
 from google.genai import Client
-client = Client()
+import os
+from dotenv import load_dotenv
+
+load_dotenv()        # load .env if using locally
+
+client = Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 #load env variables from .env file
 load_dotenv()
