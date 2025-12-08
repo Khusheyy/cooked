@@ -11,7 +11,7 @@ from google.genai.errors import APIError
 from google.genai import Client
 
 api_key = os.getenv("GEMINI_API_KEY") 
-client = Client(api_key=api_key)
+client = Client(api_key=GEMINI_API_KEY)
 
 SCOPE = "user-top-read"
 SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
