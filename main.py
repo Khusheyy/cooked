@@ -113,23 +113,43 @@ st.write("Get ready to laugh at your own music taste! Click the button below to 
 
 # Allow users to clear the Spotify cache and force re-authentication
 client_id_preview = os.getenv("SPOTIPY_CLIENT_ID")
+
+
+def clear_spotify_cache(client_id_preview: str) -> int:
+    """Remove any local Spotipy cache files for the current client id and reset session id.
+
+    Returns the number of files removed.
+    """
+    if not client_id_preview:
+        return 0
+    pattern = f".cache-{client_id_preview}-*"
+    removed = 0
+    for f in glob.glob(pattern):
+        try:
+            os.remove(f)
+            removed += 1
+        except Exception:
+            pass
+    # reset session id so a new cache file will be created on next auth
+    st.session_state.pop('sp_session_id', None)
+    return removed
+
+
 if client_id_preview:
-    if st.button("Clear Spotify cache and re-authenticate"):
-        # remove any cache files that match the current client id pattern
-        pattern = f".cache-{client_id_preview}-*"
-        removed = 0
-        for f in glob.glob(pattern):
-            try:
-                os.remove(f)
-                removed += 1
-            except Exception:
-                pass
-        # reset session id so a new cache file will be created on next auth
-        st.session_state.pop('sp_session_id', None)
+    # Backend-only: automatically clear Spotipy cache once per Streamlit session
+    # for the current client id. This avoids any UI controls (checkboxes/buttons).
+    # We store the client id for which we've already cleared in session state so
+    # we don't repeatedly delete cache files on every rerun.
+    already_cleared_for = st.session_state.get('sp_cache_cleared_for_client')
+    if already_cleared_for != client_id_preview:
+        removed = clear_spotify_cache(client_id_preview)
+        # mark as cleared for this client id
+        st.session_state['sp_cache_cleared_for_client'] = client_id_preview
+        # No Streamlit UI feedback (backend-only). Print to logs for debugging.
         if removed:
-            st.success(f"Cleared {removed} cache file(s). Click 'Reveal my musical sins' to re-authenticate.")
+            print(f"Cleared {removed} Spotipy cache file(s) for client {client_id_preview}.")
         else:
-            st.info("No cache files found to remove. Click 'Reveal my musical sins' to authenticate.")
+            print(f"No Spotipy cache files found for client {client_id_preview}.")
 
 
 if st.button(" Reveal my musical sins "):
