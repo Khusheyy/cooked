@@ -6,7 +6,7 @@ import glob
 import pandas as pd
 import os
 import socket
-from urllib.parse import urlparse, urlunparse, parse_qs
+from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv 
 load_dotenv()    
 #load env variables from .env file             
@@ -69,28 +69,41 @@ def get_spotify_client():
 
         # Try using the configured port; if it's busy, choose an ephemeral port.
         port = parsed.port
+        is_loopback = host in ("127.0.0.1", "localhost", "::1")
         def _is_port_free(h, p):
+            # Only probe the loopback interface to check port availability.
+            probe_host = '127.0.0.1'
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((h, p))
+                s.bind((probe_host, p))
                 s.close()
                 return True
             except OSError:
                 return False
 
-        if port is None or not _is_port_free(host, port):
-            # pick an ephemeral free port on localhost
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind((host, 0))
-            port = s.getsockname()[1]
-            s.close()
-            # store chosen redirect in session so subsequent reruns reuse it
-            st.session_state['sp_chosen_redirect'] = f"{scheme}://{host}:{port}{path}"
-            redirect_to_use = st.session_state['sp_chosen_redirect']
-            print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
-        else:
+        if not is_loopback:
+            # Non-localhost redirect (deployed). Do not attempt to bind — go
+            # straight to using the configured redirect and the manual flow.
             redirect_to_use = configured_redirect
+            print(f"Redirect host '{host}' is not loopback — skipping local-server OAuth flow.")
+        else:
+            # Try using the configured port; if it's busy, choose an ephemeral port.
+            if port is None or not _is_port_free(host, port):
+                # pick an ephemeral free port on the loopback interface
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind(('127.0.0.1', 0))
+                port = s.getsockname()[1]
+                s.close()
+                # store chosen redirect in session so subsequent reruns reuse it
+                # Always use loopback hostname for the chosen redirect to avoid
+                # binding to non-local addresses.
+                chosen_host = '127.0.0.1'
+                st.session_state['sp_chosen_redirect'] = f"{scheme}://{chosen_host}:{port}{path}"
+                redirect_to_use = st.session_state['sp_chosen_redirect']
+                print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
+            else:
+                redirect_to_use = configured_redirect
 
         # authentication manager
         auth_manager = SpotifyOAuth(
@@ -123,32 +136,36 @@ def get_spotify_client():
             # Other failures will also try manual fallback below.
             pass
 
-        # Manual fallback: generate an authorization URL and let the user paste
-        # the full redirect URL they are sent to after authorizing the app.
+        # Manual fallback / deployed flow: generate an authorization URL and
+        # either pick up the `code` from the query params (preferred) or show
+        # the authorize link for the user to click. Use `st.query_params`
+        # (stable API) to read query parameters.
         try:
             auth_url = auth_manager.get_authorize_url()
-            # In a Streamlit app we can display the URL and ask the user to paste
-            # the resulting redirect URL (which contains the code param).
-            st.write("### Spotify authorization required")
-            st.write("Open the link below in a browser, authorize the app, then paste the full redirect URL you are sent to.")
-            st.markdown(f"[Authorize here]({auth_url})")
-            redirect_response = st.text_input("Paste the full redirect URL after authorization:", key="spotify_manual_redirect")
-            if redirect_response:
-                parsed = urlparse(redirect_response)
-                qs = parse_qs(parsed.query)
-                code = qs.get('code', [None])[0]
-                if not code:
-                    return None, "No authorization code found in pasted URL."
-                # Exchange code for token
+            # Check query params for an authorization code (deployed flow).
+            query_params = st.query_params
+            code_list = query_params.get('code') or query_params.get('CODE')
+            code = code_list[0] if code_list else None
+
+            if code:
+                # Exchange code for token. Handle either dict or string return.
                 try:
                     token_info = auth_manager.get_access_token(code=code)
-                    access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
+                    access_token = token_info.get('access_token') if isinstance(token_info, dict) else token_info
+                    if not access_token:
+                        raise Exception('No access token returned')
                     sp = spotipy.Spotify(auth=access_token)
                     return sp, None
                 except Exception as ex:
                     return None, f"Failed to exchange code for token: {ex}"
-            else:
-                return None, "User authorization required. Open the shown URL and paste the redirect URL here to continue."
+
+            # No code present yet: show authorize link and instruct the user to
+            # click it and complete authorization. Spotify will redirect back
+            # to this app with the code, and the app will pick it up on reload.
+            st.write("### Spotify authorization required")
+            st.write("Click the link below to authorize the app. After authorizing, Spotify will redirect you back to this page and the app will continue automatically.")
+            st.markdown(f"[Authorize here]({auth_url})")
+            return None, "User authorization required: follow the authorize link shown above."
         except Exception as e:
             return None, f"OAuth fallback failed: {e}"
         # spotipy client sp
@@ -325,7 +342,7 @@ if st.button(" Reveal my musical sins "):
                 
                 ## track details (including genres)
                 st.subheader("📝 Track Details (Including Genres)")
-                st.dataframe(df_tracks[['Rank', 'Track Name', 'Artist(s)', 'Album', 'Genres']], use_container_width=True, hide_index=True)
+                st.dataframe(df_tracks[['Rank', 'Track Name', 'Artist(s)', 'Album', 'Genres']], width='stretch', hide_index=True)
 
             # --- The Dynamic Roast Section ---
             # Now track_genre_data is guaranteed to be defined (either empty or populated)
