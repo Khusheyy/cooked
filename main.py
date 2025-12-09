@@ -5,6 +5,8 @@ import uuid
 import glob
 import pandas as pd
 import os
+import socket
+from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv 
 load_dotenv()    
 #load env variables from .env file             
@@ -55,12 +57,47 @@ def get_spotify_client():
             st.session_state['sp_session_id'] = str(uuid.uuid4())
 
         cache_path = f".cache-{client_id}-{st.session_state['sp_session_id']}"
-        #authentication manager
+
+        # Determine a safe redirect URI: try the configured one first, but if the
+        # port is already bound, pick an available ephemeral port to avoid
+        # "Address already in use" errors when Spotipy starts a local server.
+        configured_redirect = os.getenv("SPOTIPY_REDIRECT_URI", SPOTIPY_REDIRECT_URI)
+        parsed = urlparse(configured_redirect)
+        host = parsed.hostname or '127.0.0.1'
+        path = parsed.path or '/callback'
+        scheme = parsed.scheme or 'http'
+
+        # Try using the configured port; if it's busy, choose an ephemeral port.
+        port = parsed.port
+        def _is_port_free(h, p):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((h, p))
+                s.close()
+                return True
+            except OSError:
+                return False
+
+        if port is None or not _is_port_free(host, port):
+            # pick an ephemeral free port on localhost
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind((host, 0))
+            port = s.getsockname()[1]
+            s.close()
+            # store chosen redirect in session so subsequent reruns reuse it
+            st.session_state['sp_chosen_redirect'] = f"{scheme}://{host}:{port}{path}"
+            redirect_to_use = st.session_state['sp_chosen_redirect']
+            print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
+        else:
+            redirect_to_use = configured_redirect
+
+        # authentication manager
         auth_manager = SpotifyOAuth(
             scope=SCOPE,
             client_id=client_id,
             client_secret=client_secret,
-            redirect_uri=SPOTIPY_REDIRECT_URI,
+            redirect_uri=redirect_to_use,
             cache_path=cache_path,
             show_dialog=True
         )
