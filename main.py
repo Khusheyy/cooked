@@ -39,7 +39,7 @@ except Exception as e:
     print(f"Error initializing Gemini Client: {e}")
 
 SCOPE = "user-top-read"
-SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "https://cooked.streamlit.apgitp/callback")
+SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
 
 
 def get_spotify_client():
