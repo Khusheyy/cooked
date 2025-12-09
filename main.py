@@ -107,11 +107,25 @@ def get_spotify_client():
         # registered). Attempt the usual flow first and fall back to a manual
         # authorize URL + paste-back redirect flow if that fails.
         try:
-            # This may trigger the local server flow internally.
-            token_info = auth_manager.get_access_token(as_dict=True)
-            if token_info is None:
+            # Prefer a cached token if available (avoids starting local server).
+            token_info = auth_manager.get_cached_token()
+            if token_info:
+                access_token = token_info.get('access_token') if isinstance(token_info, dict) else token_info
+                if access_token:
+                    sp = spotipy.Spotify(auth=access_token)
+                    return sp, None
+
+            # No cached token — attempt interactive flow. Do NOT pass
+            # `as_dict=True` to avoid the deprecation warning.
+            token_result = auth_manager.get_access_token()
+            if isinstance(token_result, dict):
+                access_token = token_result.get('access_token')
+            else:
+                access_token = token_result
+
+            if not access_token:
                 raise Exception("No token returned from auth manager")
-            access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
+
             sp = spotipy.Spotify(auth=access_token)
             return sp, None
         except OSError as ose:
