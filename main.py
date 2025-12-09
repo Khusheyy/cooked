@@ -5,188 +5,114 @@ import uuid
 import glob
 import pandas as pd
 import os
-import socket
-from urllib.parse import urlparse, urlunparse
-from dotenv import load_dotenv 
-load_dotenv()    
-#load env variables from .env file             
+from dotenv import load_dotenv
 
+# --- Configuration & Initialization ---
 
-from google.genai import Client
-from google.genai.errors import APIError 
+load_dotenv()
 
-#
-# client automatically looks for the GEMINI_API_KEY environment variable
-try:
-    gemini_client = Client()
-    print("Gemini Client initialized successfully!")
-except Exception as e:
-    # A generic catch for environment/API key issues
-    print(f"Error initializing Gemini Client: {e}")
-# Load Gemini API key from environment early so it's available for initialization
+# Load API keys and config
+SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
+SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
+# MUST be an HTTPS URL matching one registered in your Spotify App Settings
+SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "https://cooked.streamlit.app/callback")
+SCOPE = "user-top-read"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# The client will use the explicit API key if provided, otherwise it falls back
-# to the client's automatic environment lookup behavior.
+# --- Gemini Client Initialization (Simplified) ---
+
+# The client automatically looks for the GEMINI_API_KEY environment variable.
+# We keep this block simple and let the function handle the error if the key is missing.
+gemini_client = None
 try:
-    if GEMINI_API_KEY:
-        gemini_client = Client(api_key=GEMINI_API_KEY)
-    else:
-        gemini_client = Client()
-    print("Gemini Client initialized successfully!")
+    gemini_client = Client(api_key=GEMINI_API_KEY)
+    # The print statement is removed for cleaner Streamlit deployment logs, but 
+    # you can keep it for local testing if you prefer.
+    # print("Gemini Client initialized successfully!") 
 except Exception as e:
-    # A generic catch for environment/API key issues
-    print(f"Error initializing Gemini Client: {e}")
+    # Handle the case where the key is missing/invalid
+    print(f"Error initializing Gemini Client: {e}") 
+    from google.genai import Client # Import here if not already imported globally
+    from google.genai.errors import APIError
 
-SCOPE = "user-top-read"
-SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "https://cooked.streamlit.app/callback")
-
+# --- Core Authentication Function (Fixed) ---
 
 def get_spotify_client():
-    client_id = os.getenv("SPOTIPY_CLIENT_ID")
-    client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
-    
-    if not client_id or not client_secret:
+    if not SPOTIPY_CLIENT_ID or not SPOTIPY_CLIENT_SECRET:
         return None, "Please set 'SPOTIPY_CLIENT_ID' and 'SPOTIPY_CLIENT_SECRET' in a '.env' file or environment variables"
-    
+
+    # Ensure each Streamlit session gets a unique cache (avoids token reuse across users)
+    if 'sp_session_id' not in st.session_state:
+        st.session_state['sp_session_id'] = str(uuid.uuid4())
+
+    # Spotipy cache path
+    cache_path = f".cache-{SPOTIPY_CLIENT_ID}-{st.session_state['sp_session_id']}"
+
     try:
-        # Ensure each Streamlit session gets a unique cache to avoid reusing
-        # a developer's previously-authorized token. This forces each user
-        # to authenticate with their own Spotify account.
-        if 'sp_session_id' not in st.session_state:
-            st.session_state['sp_session_id'] = str(uuid.uuid4())
-
-        cache_path = f".cache-{client_id}-{st.session_state['sp_session_id']}"
-
-        # Determine a safe redirect URI: try the configured one first, but if the
-        # port is already bound, pick an available ephemeral port to avoid
-        # "Address already in use" errors when Spotipy starts a local server.
-        configured_redirect = os.getenv("SPOTIPY_REDIRECT_URI", SPOTIPY_REDIRECT_URI)
-        parsed = urlparse(configured_redirect)
-        host = parsed.hostname or '127.0.0.1'
-        path = parsed.path or '/callback'
-        scheme = parsed.scheme or 'http'
-
-        # Try using the configured port; if it's busy, choose an ephemeral port.
-        port = parsed.port
-        is_loopback = host in ("127.0.0.1", "localhost", "::1")
-        def _is_port_free(h, p):
-            # Only probe the loopback interface to check port availability.
-            probe_host = '127.0.0.1'
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((probe_host, p))
-                s.close()
-                return True
-            except OSError:
-                return False
-
-        if not is_loopback:
-            # Non-localhost redirect (deployed). Do not attempt to bind — go
-            # straight to using the configured redirect and the manual flow.
-            redirect_to_use = configured_redirect
-            print(f"Redirect host '{host}' is not loopback — skipping local-server OAuth flow.")
-        else:
-            # Try using the configured port; if it's busy, choose an ephemeral port.
-            if port is None or not _is_port_free(host, port):
-                # pick an ephemeral free port on the loopback interface
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.bind(('127.0.0.1', 0))
-                port = s.getsockname()[1]
-                s.close()
-                # store chosen redirect in session so subsequent reruns reuse it
-                # Always use loopback hostname for the chosen redirect to avoid
-                # binding to non-local addresses.
-                chosen_host = '127.0.0.1'
-                st.session_state['sp_chosen_redirect'] = f"{scheme}://{chosen_host}:{port}{path}"
-                redirect_to_use = st.session_state['sp_chosen_redirect']
-                print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
-            else:
-                redirect_to_use = configured_redirect
-
-        # authentication manager
+        # Authentication manager using the fixed HTTPS redirect URI
         auth_manager = SpotifyOAuth(
             scope=SCOPE,
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_to_use,
+            client_id=SPOTIPY_CLIENT_ID,
+            client_secret=SPOTIPY_CLIENT_SECRET,
+            redirect_uri=SPOTIPY_REDIRECT_URI,
             cache_path=cache_path,
             show_dialog=True
         )
 
-        # Try to obtain a token. In some deployment environments the local
-        # HTTP server used by Spotipy cannot bind (or the redirect URI is not
-        # registered). Attempt the usual flow first and fall back to a manual
-        # authorize URL + paste-back redirect flow if that fails.
-        try:
-            # This may trigger the local server flow internally.
-            # token_info = auth_manager.get_access_token(as_dict=True)
-            token_info = auth_manager.get_cached_token()
+        # 1. Try to get a token from the cache first (e.g., if already authorized)
+        token_info = auth_manager.get_cached_token()
 
-            if token_info is None:
-                raise Exception("No token returned from auth manager")
-            access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
+        if token_info and token_info.get('access_token'):
+            access_token = token_info['access_token']
             sp = spotipy.Spotify(auth=access_token)
             return sp, None
-        except OSError as ose:
-            # Likely "Address already in use" when starting local server.
-            print(f"Local server OAuth failed: {ose}; falling back to manual flow.")
-        except Exception:
-            # Other failures will also try manual fallback below.
-            pass
 
-        # Manual fallback / deployed flow: generate an authorization URL and
-        # either pick up the `code` from the query params (preferred) or show
-        # the authorize link for the user to click. Use `st.query_params`
-        # (stable API) to read query parameters.
-        try:
-            auth_url = auth_manager.get_authorize_url()
-            # Check query params for an authorization code (deployed flow).
-            query_params = st.query_params
-            code_list = query_params.get('code') or query_params.get('CODE')
-            code = code_list[0] if code_list else None
+        # 2. If no valid token in cache, check query parameters for an OAuth code
+        query_params = st.query_params
+        # Streamlit standardizes query params to lists; we want the first item
+        code_list = query_params.get('code')
+        code = code_list[0] if code_list else None
 
-            if code:
-                # Exchange code for token. Handle either dict or string return.
-                try:
-                    token_info = auth_manager.get_access_token(code=code)
-                    access_token = token_info.get('access_token') if isinstance(token_info, dict) else token_info
-                    if not access_token:
-                        raise Exception('No access token returned')
-                    sp = spotipy.Spotify(auth=access_token)
-                    return sp, None
-                except Exception as ex:
-                    return None, f"Failed to exchange code for token: {ex}"
+        if code:
+            # Exchange code for token
+            try:
+                # Use code to get the token, which also saves it to the cache file
+                token_info = auth_manager.get_access_token(code=code, as_dict=True)
+                access_token = token_info.get('access_token')
+                if not access_token:
+                    raise Exception('No access token returned after code exchange')
+                
+                # Clear the 'code' from query parameters to prevent re-exchange on rerun
+                # Note: st.query_params.clear() is available in newer Streamlit versions
+                # For compatibility, we can rely on Streamlit's refresh after auth.
+                # However, for robustness, we return the client and let the app proceed.
+                sp = spotipy.Spotify(auth=access_token)
+                return sp, None
+            except Exception as ex:
+                # This is where your original 'invalid_grant' error occurred
+                return None, f"Failed to exchange code for token: {ex}. **Ensure the 'SPOTIPY_REDIRECT_URI' in your .env file EXACTLY matches the Redirect URI registered in your Spotify App Dashboard.**"
 
-            # No code present yet: show authorize link and instruct the user to
-            # click it and complete authorization. Spotify will redirect back
-            # to this app with the code, and the app will pick it up on reload.
-            st.write("### Spotify authorization required")
-            st.write("Click the link below to authorize the app. After authorizing, Spotify will redirect you back to this page and the app will continue automatically.")
-            st.markdown(f"[Authorize here]({auth_url})")
-            return None, "User authorization required: follow the authorize link shown above."
-        except Exception as e:
-            return None, f"OAuth fallback failed: {e}"
-        # spotipy client sp
-        sp = spotipy.Spotify(auth_manager=auth_manager)
-        return sp, None
+        # 3. If no token and no code, generate authorization URL for the user to click
+        auth_url = auth_manager.get_authorize_url()
+        
+        st.write("### 🔑 Spotify Authorization Required")
+        st.write(f"Click the link below to authorize the app. Spotify will redirect you back to **{SPOTIPY_REDIRECT_URI}** with the authorization code.")
+        st.markdown(f"[Authorize App and Get My Music Roast!]({auth_url})")
+        return None, "User authorization required: follow the authorize link shown above."
+
     except Exception as e:
         return None, str(e)
 
+# --- Roast Generation Function (Cleaned) ---
 
 def generate_roast(track_genre_data):
-    
     if not GEMINI_API_KEY:
         return "FATAL ERROR: GEMINI_API_KEY not set. Cannot generate dynamic roast"
 
-    try:
-        # Prefer the already-initialized global client when available
-        client = gemini_client if 'gemini_client' in globals() else Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        return f"GEMINI CLIENT ERROR: Could not initialize client. Check API key. Error: {e}"
+    if gemini_client is None:
+         return "GEMINI CLIENT ERROR: Could not initialize client. Check API key."
 
-    #format the track and genre data for the prompt
+    # format the track and genre data for the prompt
     data_string = "\n".join([f"- Track: {t['name']} (Genres: {', '.join(t['genres'])})" for t in track_genre_data])
 
     prompt = f"""
@@ -198,7 +124,7 @@ def generate_roast(track_genre_data):
     
     try:
         # Call the Gemini API
-        response = client.models.generate_content(
+        response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt
         )
@@ -209,14 +135,14 @@ def generate_roast(track_genre_data):
         return f"An unexpected error occurred during roast generation: {e}"
 
 
-# streamlit app codee
+# --- Streamlit App Code (Unchanged logic, just using cleaned functions) ---
 
 st.set_page_config(page_title="Music Roast", page_icon="🎵")
 st.title("🎵 Music Roast Generator 🎵")
 st.write("Get ready to laugh at your own music taste! Click the button below to fetch your top Spotify tracks.")
 
 # Allow users to clear the Spotify cache and force re-authentication
-client_id_preview = os.getenv("SPOTIPY_CLIENT_ID")
+client_id_preview = SPOTIPY_CLIENT_ID # Use the constant defined earlier
 
 
 def clear_spotify_cache(client_id_preview: str) -> int:
@@ -226,6 +152,8 @@ def clear_spotify_cache(client_id_preview: str) -> int:
     """
     if not client_id_preview:
         return 0
+    # Note: Streamlit Cloud does not have a persistent local filesystem for the cache
+    # to be truly effective. This is primarily useful for local development.
     pattern = f".cache-{client_id_preview}-*"
     removed = 0
     for f in glob.glob(pattern):
@@ -241,29 +169,27 @@ def clear_spotify_cache(client_id_preview: str) -> int:
 
 if client_id_preview:
     # Backend-only: automatically clear Spotipy cache once per Streamlit session
-    # for the current client id. This avoids any UI controls (checkboxes/buttons).
-    # We store the client id for which we've already cleared in session state so
-    # we don't repeatedly delete cache files on every rerun.
     already_cleared_for = st.session_state.get('sp_cache_cleared_for_client')
     if already_cleared_for != client_id_preview:
         removed = clear_spotify_cache(client_id_preview)
-        # mark as cleared for this client id
         st.session_state['sp_cache_cleared_for_client'] = client_id_preview
-        # No Streamlit UI feedback (backend-only). Print to logs for debugging.
         if removed:
             print(f"Cleared {removed} Spotipy cache file(s) for client {client_id_preview}.")
-        else:
-            print(f"No Spotipy cache files found for client {client_id_preview}.")
+        # else:
+            # print(f"No Spotipy cache files found for client {client_id_preview}.")
 
 
 if st.button(" Reveal my musical sins "):
     with st.spinner("Authenticating with Spotify, fetching data, and preparing the critique..."):
+        # This call will handle authorization, either through cache, code, or URL redirect
         sp, err = get_spotify_client()
 
     if err:
+        # Display the error/authorization message returned by get_spotify_client
         st.error(err)
     else:
         try:
+            # ... (rest of the Spotify data fetching and processing logic remains here)
             # fetch the user's top 10 tracks
             top_tracks = sp.current_user_top_tracks(limit=10, time_range='short_term')
             items = top_tracks.get('items', [])
@@ -345,13 +271,9 @@ if st.button(" Reveal my musical sins "):
                 st.dataframe(df_tracks[['Rank', 'Track Name', 'Artist(s)', 'Album', 'Genres']], width='stretch', hide_index=True)
 
             # --- The Dynamic Roast Section ---
-            # Now track_genre_data is guaranteed to be defined (either empty or populated)
             st.markdown("---")
             st.header("🔥 The Music Roast 🔥")
             
-            # Generate the roast using the Gemini API
-            # This call is outside the `else` block to be near the display logic, 
-            # but relies on track_genre_data being initialized earlier.
             roast = generate_roast(track_genre_data)
             
             # Display the Roast
