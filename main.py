@@ -108,7 +108,9 @@ def get_spotify_client():
         # authorize URL + paste-back redirect flow if that fails.
         try:
             # This may trigger the local server flow internally.
-            token_info = auth_manager.get_access_token(as_dict=True)
+            # token_info = auth_manager.get_access_token(as_dict=True)
+            token_info = auth_manager.get_cached_token()
+
             if token_info is None:
                 raise Exception("No token returned from auth manager")
             access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
