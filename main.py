@@ -6,7 +6,7 @@ import glob
 import pandas as pd
 import os
 import socket
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qs
 from dotenv import load_dotenv 
 load_dotenv()    
 #load env variables from .env file             
@@ -15,8 +15,8 @@ load_dotenv()
 from google.genai import Client
 from google.genai.errors import APIError 
 
-# --- Client Initialization ---
-# The client automatically looks for the GEMINI_API_KEY environment variable.
+#
+# client automatically looks for the GEMINI_API_KEY environment variable
 try:
     gemini_client = Client()
     print("Gemini Client initialized successfully!")
@@ -39,7 +39,7 @@ except Exception as e:
     print(f"Error initializing Gemini Client: {e}")
 
 SCOPE = "user-top-read"
-SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+SPOTIPY_REDIRECT_URI = os.getenv("SPOTIPY_REDIRECT_URI", "https://cooked.streamlit.apgitp/callback")
 
 
 def get_spotify_client():
@@ -101,6 +101,54 @@ def get_spotify_client():
             cache_path=cache_path,
             show_dialog=True
         )
+
+        # Try to obtain a token. In some deployment environments the local
+        # HTTP server used by Spotipy cannot bind (or the redirect URI is not
+        # registered). Attempt the usual flow first and fall back to a manual
+        # authorize URL + paste-back redirect flow if that fails.
+        try:
+            # This may trigger the local server flow internally.
+            token_info = auth_manager.get_access_token(as_dict=True)
+            if token_info is None:
+                raise Exception("No token returned from auth manager")
+            access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
+            sp = spotipy.Spotify(auth=access_token)
+            return sp, None
+        except OSError as ose:
+            # Likely "Address already in use" when starting local server.
+            print(f"Local server OAuth failed: {ose}; falling back to manual flow.")
+        except Exception:
+            # Other failures will also try manual fallback below.
+            pass
+
+        # Manual fallback: generate an authorization URL and let the user paste
+        # the full redirect URL they are sent to after authorizing the app.
+        try:
+            auth_url = auth_manager.get_authorize_url()
+            # In a Streamlit app we can display the URL and ask the user to paste
+            # the resulting redirect URL (which contains the code param).
+            st.write("### Spotify authorization required")
+            st.write("Open the link below in a browser, authorize the app, then paste the full redirect URL you are sent to.")
+            st.markdown(f"[Authorize here]({auth_url})")
+            redirect_response = st.text_input("Paste the full redirect URL after authorization:", key="spotify_manual_redirect")
+            if redirect_response:
+                parsed = urlparse(redirect_response)
+                qs = parse_qs(parsed.query)
+                code = qs.get('code', [None])[0]
+                if not code:
+                    return None, "No authorization code found in pasted URL."
+                # Exchange code for token
+                try:
+                    token_info = auth_manager.get_access_token(code=code)
+                    access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
+                    sp = spotipy.Spotify(auth=access_token)
+                    return sp, None
+                except Exception as ex:
+                    return None, f"Failed to exchange code for token: {ex}"
+            else:
+                return None, "User authorization required. Open the shown URL and paste the redirect URL here to continue."
+        except Exception as e:
+            return None, f"OAuth fallback failed: {e}"
         # spotipy client sp
         sp = spotipy.Spotify(auth_manager=auth_manager)
         return sp, None
