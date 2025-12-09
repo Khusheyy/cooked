@@ -67,8 +67,13 @@ def get_spotify_client():
         path = parsed.path or '/callback'
         scheme = parsed.scheme or 'http'
 
-        # Try using the configured port; if it's busy, choose an ephemeral port.
+        # Decide whether the redirect host is a loopback. If it's not (for
+        # example a deployed domain like cooked.streamlit.app) we MUST NOT try
+        # to bind a local socket to that host — attempting to do so raises
+        # "Cannot assign requested address" or similar errors. In those cases
+        # we'll skip the local-server flow and use the manual paste-back flow.
         port = parsed.port
+        is_loopback = host in ("127.0.0.1", "localhost", "::1")
         def _is_port_free(h, p):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -79,18 +84,25 @@ def get_spotify_client():
             except OSError:
                 return False
 
-        if port is None or not _is_port_free(host, port):
-            # pick an ephemeral free port on localhost
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind((host, 0))
-            port = s.getsockname()[1]
-            s.close()
-            # store chosen redirect in session so subsequent reruns reuse it
-            st.session_state['sp_chosen_redirect'] = f"{scheme}://{host}:{port}{path}"
-            redirect_to_use = st.session_state['sp_chosen_redirect']
-            print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
-        else:
+        if not is_loopback:
+            # Non-localhost redirect (deployed). Do not attempt to bind — go
+            # straight to using the configured redirect and the manual flow.
             redirect_to_use = configured_redirect
+            print(f"Redirect host '{host}' is not loopback — skipping local-server OAuth flow.")
+        else:
+            # Try using the configured port; if it's busy, choose an ephemeral port.
+            if port is None or not _is_port_free(host, port):
+                # pick an ephemeral free port on localhost
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind((host, 0))
+                port = s.getsockname()[1]
+                s.close()
+                # store chosen redirect in session so subsequent reruns reuse it
+                st.session_state['sp_chosen_redirect'] = f"{scheme}://{host}:{port}{path}"
+                redirect_to_use = st.session_state['sp_chosen_redirect']
+                print(f"Configured redirect port was busy — using ephemeral port {port} for OAuth callback.")
+            else:
+                redirect_to_use = configured_redirect
 
         # authentication manager
         auth_manager = SpotifyOAuth(
@@ -107,15 +119,29 @@ def get_spotify_client():
         # registered). Attempt the usual flow first and fall back to a manual
         # authorize URL + paste-back redirect flow if that fails.
         try:
-            # This may trigger the local server flow internally.
-            # token_info = auth_manager.get_access_token(as_dict=True)
+            # Prefer a cached token if available (avoids starting local server).
             token_info = auth_manager.get_cached_token()
+            if token_info:
+                access_token = token_info.get('access_token') if isinstance(token_info, dict) else token_info
+                if access_token:
+                    sp = spotipy.Spotify(auth=access_token)
+                    return sp, None
 
-            if token_info is None:
-                raise Exception("No token returned from auth manager")
-            access_token = token_info['access_token'] if isinstance(token_info, dict) else token_info
-            sp = spotipy.Spotify(auth=access_token)
-            return sp, None
+            # If the redirect host is loopback, we can attempt the interactive
+            # local-server flow; otherwise skip straight to manual fallback.
+            if is_loopback:
+                token_result = auth_manager.get_access_token()
+                if isinstance(token_result, dict):
+                    access_token = token_result.get('access_token')
+                else:
+                    access_token = token_result
+
+                if not access_token:
+                    raise Exception("No token returned from auth manager")
+
+                sp = spotipy.Spotify(auth=access_token)
+                return sp, None
+            # else: fall through to manual fallback
         except OSError as ose:
             # Likely "Address already in use" when starting local server.
             print(f"Local server OAuth failed: {ose}; falling back to manual flow.")
@@ -123,22 +149,19 @@ def get_spotify_client():
             # Other failures will also try manual fallback below.
             pass
 
-        # Manual fallback: generate an authorization URL and let the user paste
-        # the full redirect URL they are sent to after authorizing the app.
+        # Manual fallback for deployed environments (Streamlit Cloud).
+        # If Spotify redirects back to this app URL, the code will appear in
+        # the query params — pick it up automatically and exchange it. If no
+        # code is present, show the authorize URL so the user can sign in.
         try:
             auth_url = auth_manager.get_authorize_url()
-            # In a Streamlit app we can display the URL and ask the user to paste
-            # the resulting redirect URL (which contains the code param).
-            st.write("### Spotify authorization required")
-            st.write("Open the link below in a browser, authorize the app, then paste the full redirect URL you are sent to.")
-            st.markdown(f"[Authorize here]({auth_url})")
-            redirect_response = st.text_input("Paste the full redirect URL after authorization:", key="spotify_manual_redirect")
-            if redirect_response:
-                parsed = urlparse(redirect_response)
-                qs = parse_qs(parsed.query)
-                code = qs.get('code', [None])[0]
-                if not code:
-                    return None, "No authorization code found in pasted URL."
+            # First check whether Spotify already redirected back with a code
+            # (this happens on deployed apps if the redirect URI is the app URL).
+            query_params = st.experimental_get_query_params()
+            code_list = query_params.get('code') or query_params.get('CODE')
+            code = code_list[0] if code_list else None
+
+            if code:
                 # Exchange code for token
                 try:
                     token_info = auth_manager.get_access_token(code=code)
@@ -147,8 +170,14 @@ def get_spotify_client():
                     return sp, None
                 except Exception as ex:
                     return None, f"Failed to exchange code for token: {ex}"
-            else:
-                return None, "User authorization required. Open the shown URL and paste the redirect URL here to continue."
+
+            # No code present yet: show authorize link and instruct the user to
+            # click it and complete authorization. Spotify will redirect back
+            # to this app with the code, and the app will pick it up on reload.
+            st.write("### Spotify authorization required")
+            st.write("Click the link below to authorize the app. After authorizing, Spotify will redirect you back to this page and the app will continue automatically.")
+            st.markdown(f"[Authorize here]({auth_url})")
+            return None, "User authorization required: follow the authorize link shown above."
         except Exception as e:
             return None, f"OAuth fallback failed: {e}"
         # spotipy client sp
@@ -173,7 +202,7 @@ def generate_roast(track_genre_data):
     data_string = "\n".join([f"- Track: {t['name']} (Genres: {', '.join(t['genres'])})" for t in track_genre_data])
 
     prompt = f"""
-    Generate a humorous and cutting roast of the user's music taste based on their top Spotify tracks and associated genres. Use witty insults and playful jabs, focusing on the genres and track choices. Please make it funny and also use foul languages in english and hidi as well.Present the roast in a single paragraph.
+    Generate a humorous and cutting roast of the user's music taste based on their top Spotify tracks and associated genres. Use witty insults and playful jabs, focusing on the genres and track choices. Please make it funny and also use foul languages in english and hindi as well.Present the roast in a single paragraph.
     ---
     {data_string}
     ---
@@ -203,10 +232,7 @@ client_id_preview = os.getenv("SPOTIPY_CLIENT_ID")
 
 
 def clear_spotify_cache(client_id_preview: str) -> int:
-    """Remove any local Spotipy cache files for the current client id and reset session id.
-
-    Returns the number of files removed.
-    """
+    
     if not client_id_preview:
         return 0
     pattern = f".cache-{client_id_preview}-*"
